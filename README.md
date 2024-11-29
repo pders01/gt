@@ -15,9 +15,20 @@ GT is a command-line tool that simplifies SSH connections by leveraging your exi
 
 ## Installation
 
+### From Source
 ```bash
 go install
 ```
+
+### From Release
+1. Download the appropriate version for your system from the [releases page](https://github.com/yourusername/gt/releases)
+2. For macOS users:
+   - The binary is ad-hoc signed for basic security verification
+   - When you first run it, you'll see a security warning
+   - You can approve it by:
+     - Right-click the binary and choose "Open" (you'll only need to do this once)
+     - Or in Terminal: `xattr -d com.apple.quarantine ./gt`
+3. Add the binary to your PATH
 
 ## Usage
 

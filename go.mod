@@ -1,6 +1,6 @@
 module gt
 
-go 1.23.3
+go 1.20
 
 require (
 	github.com/fatih/color v1.18.0 // indirect

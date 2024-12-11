@@ -129,8 +129,11 @@ Examples:
   # Connect with a different user
   gt myserver -u admin
 
-  # Copy files using SCP
-  gt myserver -s file1.txt file2.txt`,
+  # Upload files to remote host
+  gt myserver -s local1.txt local2.txt remote/path/
+
+  # Download files from remote host
+  gt myserver -s :remote/file1.txt :remote/file2.txt local/path/`,
 	Args:              cobra.MinimumNArgs(1),
 	ValidArgsFunction: completeHosts,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -152,7 +155,7 @@ Examples:
 		address := fmt.Sprintf("%s@%s", connectUser, hostname)
 
 		if useScp {
-			return runSCP(args[1:])
+			return runSCP(alias, address, args[1:])
 		}
 		return runSSH(alias, address)
 	},
@@ -165,11 +168,43 @@ func completeHosts(cmd *cobra.Command, args []string, toComplete string) ([]stri
 	return getHosts(), cobra.ShellCompDirectiveNoFileComp
 }
 
-func runSCP(files []string) error {
+func runSCP(alias string, address string, files []string) error {
 	if len(files) == 0 {
 		return fmt.Errorf("no files specified for SCP")
 	}
-	execCmd := exec.Command("scp", append([]string{"-r"}, files...)...)
+
+	scpArgs := []string{}
+
+	// Add SSH config options
+	port, _ := cfg.Get(alias, "Port")
+	if port != "" {
+		scpArgs = append(scpArgs, "-P", port)
+	}
+
+	identity, _ := cfg.Get(alias, "IdentityFile")
+	if identity != "" {
+		scpArgs = append(scpArgs, "-i", identity)
+	}
+
+	// Determine if this is a download or upload
+	// If the first argument contains a colon, it's a download
+	isDownload := strings.Contains(files[0], ":")
+
+	if isDownload {
+		// For downloads, we need to prefix the remote files with the host address
+		for i, file := range files {
+			if strings.Contains(file, ":") {
+				files[i] = fmt.Sprintf("%s:%s", address, strings.Split(file, ":")[1])
+			}
+		}
+		scpArgs = append(scpArgs, files...)
+	} else {
+		// For uploads, only the destination needs the host address
+		scpArgs = append(scpArgs, files[:len(files)-1]...)
+		scpArgs = append(scpArgs, fmt.Sprintf("%s:%s", address, files[len(files)-1]))
+	}
+
+	execCmd := exec.Command("scp", scpArgs...)
 	return runCommand(execCmd)
 }
 

@@ -46,6 +46,19 @@ gt <host> <command>       # Run command on host
 gt list                   # List all available hosts
 ```
 
+### File Transfer (SCP)
+
+```bash
+# Upload files to remote host
+gt -s myserver local1.txt local2.txt remote/path/   # Upload local files to remote path
+
+# Download files from remote host
+gt -s myserver :remote/file1.txt local/path/        # Download remote file to local path
+gt -s myserver :remote/dir/* local/path/            # Download all files in remote dir
+
+# Note: Remote paths must be prefixed with ':' when downloading
+```
+
 ### Options
 
 ```bash

@@ -18,6 +18,7 @@ var (
 	cfg     *ssh_config.Config
 	user    string
 	useScp  bool
+	execCommand = exec.Command
 	// Color outputs using conventional terminal colors
 	aliasColor     = color.New(color.FgBlue, color.Bold) // for the host alias (like ls directories)
 	userColor      = color.New(color.FgGreen)            // for username (conventional user color)
@@ -129,10 +130,10 @@ Examples:
   # Connect with a different user
   gt myserver -u admin
 
-  # Upload files to remote host
-  gt myserver -s local1.txt local2.txt remote/path/
+  # Upload files to remote host (remote path must start with ':')
+  gt myserver -s file1.txt file2.txt :remote/path/
 
-  # Download files from remote host
+  # Download files from remote host (remote paths must start with ':')
   gt myserver -s :remote/file1.txt :remote/file2.txt local/path/`,
 	Args:              cobra.MinimumNArgs(1),
 	ValidArgsFunction: completeHosts,
@@ -169,43 +170,38 @@ func completeHosts(cmd *cobra.Command, args []string, toComplete string) ([]stri
 }
 
 func runSCP(alias string, address string, files []string) error {
-	if len(files) == 0 {
-		return fmt.Errorf("no files specified for SCP")
+	if err := validateSCPPaths(files); err != nil {
+		return err
 	}
 
-	scpArgs := []string{}
+	if cfg == nil {
+		return fmt.Errorf("SSH config is not initialized")
+	}
 
-	// Add SSH config options
 	port, _ := cfg.Get(alias, "Port")
-	if port != "" {
-		scpArgs = append(scpArgs, "-P", port)
+	identityFile, _ := cfg.Get(alias, "IdentityFile")
+
+	args := []string{
+		"-P", port,
+		"-i", identityFile,
+		"-p", // preserve file attributes
 	}
 
-	identity, _ := cfg.Get(alias, "IdentityFile")
-	if identity != "" {
-		scpArgs = append(scpArgs, "-i", identity)
-	}
-
-	// Determine if this is a download or upload
-	// If the first argument contains a colon, it's a download
-	isDownload := strings.Contains(files[0], ":")
-
-	if isDownload {
-		// For downloads, we need to prefix the remote files with the host address
-		for i, file := range files {
-			if strings.Contains(file, ":") {
-				files[i] = fmt.Sprintf("%s:%s", address, strings.Split(file, ":")[1])
-			}
-		}
-		scpArgs = append(scpArgs, files...)
+	dest := files[len(files)-1]
+	if strings.HasPrefix(dest, ":") {
+		// Upload: Add all source files then the remote destination
+		args = append(args, files[:len(files)-1]...)
+		args = append(args, address+dest)
 	} else {
-		// For uploads, only the destination needs the host address
-		scpArgs = append(scpArgs, files[:len(files)-1]...)
-		scpArgs = append(scpArgs, fmt.Sprintf("%s:%s", address, files[len(files)-1]))
+		// Download: Add remote sources then local destination
+		for _, src := range files[:len(files)-1] {
+			args = append(args, address+src)
+		}
+		args = append(args, dest)
 	}
 
-	execCmd := exec.Command("scp", scpArgs...)
-	return runCommand(execCmd)
+	cmd := execCommand("scp", args...)
+	return runCommand(cmd)
 }
 
 func runSSH(alias, address string) error {
@@ -222,7 +218,7 @@ func runSSH(alias, address string) error {
 	}
 
 	sshArgs = append(sshArgs, address)
-	return runCommand(exec.Command("ssh", sshArgs...))
+	return runCommand(execCommand("ssh", sshArgs...))
 }
 
 func runCommand(cmd *exec.Cmd) error {
@@ -230,6 +226,41 @@ func runCommand(cmd *exec.Cmd) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func validateSCPPaths(files []string) error {
+	if len(files) < 2 {
+		return fmt.Errorf("SCP requires at least a source and destination")
+	}
+
+	// Determine if this is a download based on the first file
+	isDownload := strings.HasPrefix(files[0], ":")
+
+	if isDownload {
+		// For downloads, all source paths must start with :
+		for i := 0; i < len(files)-1; i++ {
+			if !strings.HasPrefix(files[i], ":") {
+				return fmt.Errorf("download paths must start with ':' (got %s)", files[i])
+			}
+		}
+		// The last path (destination) must not start with :
+		if strings.HasPrefix(files[len(files)-1], ":") {
+			return fmt.Errorf("local destination path must not start with ':' (got %s)", files[len(files)-1])
+		}
+	} else {
+		// For uploads, all source paths must not start with :
+		for i := 0; i < len(files)-1; i++ {
+			if strings.HasPrefix(files[i], ":") {
+				return fmt.Errorf("local source paths should not contain ':' (got %s)", files[i])
+			}
+		}
+		// The last path (destination) must start with :
+		if !strings.HasPrefix(files[len(files)-1], ":") {
+			return fmt.Errorf("remote destination path must start with ':' (got %s)", files[len(files)-1])
+		}
+	}
+
+	return nil
 }
 
 func Execute() error {

@@ -196,10 +196,6 @@ func runSCP(alias string, address string, files []string) error {
 		return err
 	}
 
-	if cfg == nil {
-		return fmt.Errorf("SSH config is not initialized")
-	}
-
 	args := []string{}
 
 	port, _ := cfg.Get(alias, "Port")

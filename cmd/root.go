@@ -142,6 +142,9 @@ Examples:
   # Connect with a different user
   gt myserver -u admin
 
+  # Run a one-shot command on the remote host
+  gt myserver uptime
+
   # Upload files to remote host (remote path must start with ':')
   gt myserver -s file1.txt file2.txt :remote/path/
 
@@ -177,7 +180,7 @@ Examples:
 		if useScp {
 			return runSCP(alias, address, args[1:])
 		}
-		return runSSH(alias, address)
+		return runSSH(alias, address, args[1:])
 	},
 }
 
@@ -234,7 +237,7 @@ func runSCP(alias string, address string, files []string) error {
 	return runCommand(cmd)
 }
 
-func runSSH(alias, address string) error {
+func runSSH(alias, address string, remoteCmd []string) error {
 	sshArgs := []string{}
 
 	port, _ := cfg.Get(alias, "Port")
@@ -253,7 +256,11 @@ func runSSH(alias, address string) error {
 		sshArgs = append(sshArgs, "-i", identity)
 	}
 
+	// After --, ssh treats the next arg as user@host and everything after
+	// as the remote command. The remote-cmd args are forwarded to the
+	// remote shell verbatim, so no flag-prefix validation is needed there.
 	sshArgs = append(sshArgs, "--", address)
+	sshArgs = append(sshArgs, remoteCmd...)
 	return runCommand(execCommand("ssh", sshArgs...))
 }
 

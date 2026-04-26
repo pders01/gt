@@ -319,10 +319,11 @@ func TestRunSSH(t *testing.T) {
 	execCommand = mockCmd.Command
 
 	tests := []struct {
-		name     string
-		alias    string
-		address  string
-		wantArgs []string
+		name      string
+		alias     string
+		address   string
+		remoteCmd []string
+		wantArgs  []string
 	}{
 		{
 			name:    "basic connection",
@@ -335,11 +336,24 @@ func TestRunSSH(t *testing.T) {
 				"testuser@test.example.com",
 			},
 		},
+		{
+			name:      "remote command passthrough",
+			alias:     "testserver",
+			address:   "testuser@test.example.com",
+			remoteCmd: []string{"ls", "/tmp"},
+			wantArgs: []string{
+				"-p", "2222",
+				"-i", "~/.ssh/test_key",
+				"--",
+				"testuser@test.example.com",
+				"ls", "/tmp",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runSSH(tt.alias, tt.address)
+			err := runSSH(tt.alias, tt.address, tt.remoteCmd)
 			assert.NoError(t, err)
 			assert.Equal(t, "ssh", mockCmd.lastCommand)
 			assert.Equal(t, tt.wantArgs, mockCmd.lastArgs)

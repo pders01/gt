@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/fatih/color"
 	"github.com/kevinburke/ssh_config"
@@ -340,6 +341,11 @@ func loadConfig(path string) {
 	}
 	defer f.Close()
 
+	if err := validateOpenConfigPerms(path, f); err != nil {
+		fmt.Fprintf(os.Stderr, "Refusing to load SSH config: %v\n", err)
+		os.Exit(1)
+	}
+
 	cfg, err = ssh_config.Decode(f)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing SSH config: %v\n", err)
@@ -369,6 +375,11 @@ func handleInclude(include *ssh_config.Include, baseDir string) {
 		if err != nil {
 			continue
 		}
+		if err := validateOpenConfigPerms(match, f); err != nil {
+			fmt.Fprintf(os.Stderr, "Skipping include: %v\n", err)
+			f.Close()
+			continue
+		}
 		includedCfg, err := ssh_config.Decode(f)
 		f.Close()
 		if err != nil {
@@ -377,6 +388,34 @@ func handleInclude(include *ssh_config.Include, baseDir string) {
 		// Merge the included config
 		cfg.Hosts = append(cfg.Hosts, includedCfg.Hosts...)
 	}
+}
+
+// validateOpenConfigPerms refuses to parse a config file that another local
+// user could have tampered with. Mirrors OpenSSH's StrictModes-style check on
+// client config files: must be owned by the running user (or root) and must
+// not be group/world writable. Stat is taken from the open fd so the result
+// describes the same inode we will read, closing the TOCTOU window between
+// the check and the parse.
+func validateOpenConfigPerms(path string, f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil // Non-unix filesystem; mode/uid semantics differ.
+	}
+	return checkConfigOwnerAndMode(path, stat.Uid, info.Mode().Perm(), uint32(os.Getuid()))
+}
+
+func checkConfigOwnerAndMode(path string, fileUID uint32, mode os.FileMode, runningUID uint32) error {
+	if fileUID != runningUID && fileUID != 0 {
+		return fmt.Errorf("%s: bad ownership (uid %d; expected %d or root)", path, fileUID, runningUID)
+	}
+	if mode&0o022 != 0 {
+		return fmt.Errorf("%s: bad permissions %#o (group/world writable)", path, mode)
+	}
+	return nil
 }
 
 func resolveIncludePath(path, baseDir string) string {

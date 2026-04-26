@@ -273,6 +273,41 @@ func TestRunSCPOmitsEmptyPortAndIdentity(t *testing.T) {
 	}, mockCmd.lastArgs)
 }
 
+func TestCheckConfigOwnerAndMode(t *testing.T) {
+	const me uint32 = 1000
+	const other uint32 = 1234
+	const root uint32 = 0
+
+	tests := []struct {
+		name    string
+		uid     uint32
+		mode    os.FileMode
+		wantErr bool
+	}{
+		{"owner 0600", me, 0o600, false},
+		{"owner 0644 (group/world readable, not writable)", me, 0o644, false},
+		{"owner 0660 group writable", me, 0o660, true},
+		{"owner 0606 world writable", me, 0o606, true},
+		{"owner 0700", me, 0o700, false},
+		{"owner 0777", me, 0o777, true},
+		{"root-owned 0600", root, 0o600, false},
+		{"root-owned 0660 still rejected", root, 0o660, true},
+		{"other user owned, strict mode", other, 0o600, true},
+		{"other user owned, loose mode", other, 0o666, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkConfigOwnerAndMode("/fake/path", tt.uid, tt.mode, me)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestRunSSH(t *testing.T) {
 	setupTestConfig(t)
 

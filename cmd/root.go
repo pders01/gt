@@ -358,31 +358,57 @@ func loadConfig(path string) {
 		os.Exit(1)
 	}
 
-	cfg, err = ssh_config.Decode(f)
+	decoded, err := ssh_config.Decode(f)
 	if err != nil {
 		errorColor.Fprintf(os.Stderr, "Error parsing SSH config: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Handle includes manually since the library doesn't do it automatically
-	for _, host := range cfg.Hosts {
-		for _, node := range host.Nodes {
-			if include, ok := node.(*ssh_config.Include); ok {
-				handleInclude(include, filepath.Dir(path))
-			}
-		}
+	seen := map[string]struct{}{}
+	if abs, err := filepath.Abs(path); err == nil {
+		seen[abs] = struct{}{}
 	}
+	cfg = &ssh_config.Config{Hosts: resolveIncludes(decoded.Hosts, filepath.Dir(path), seen)}
 }
 
-func handleInclude(include *ssh_config.Include, baseDir string) {
-	path := include.String()
-	// Remove the "Include " prefix
-	path = strings.TrimPrefix(path, "Include ")
-	matches, err := filepath.Glob(resolveIncludePath(path, baseDir))
-	if err != nil {
-		return
+// resolveIncludes walks the host list and replaces every Include node with
+// the hosts it resolves to, recursively. Includes inside included files are
+// expanded the same way, so chains like main -> ~/.ssh/config.d/* -> shared
+// load fully. seen holds absolute paths of files already merged so a cycle
+// terminates instead of looping forever. Note: the underlying library has
+// its own depth-5 guard inside Decode, which catches absolute-path cycles
+// before this layer ever sees them; our seen set covers cycles formed by
+// relative-path includes where library and gt resolve to different paths.
+func resolveIncludes(hosts []*ssh_config.Host, baseDir string, seen map[string]struct{}) []*ssh_config.Host {
+	out := make([]*ssh_config.Host, 0, len(hosts))
+	for _, host := range hosts {
+		out = append(out, host)
+		for _, node := range host.Nodes {
+			include, ok := node.(*ssh_config.Include)
+			if !ok {
+				continue
+			}
+			out = append(out, expandInclude(include, baseDir, seen)...)
+		}
 	}
+	return out
+}
+
+func expandInclude(include *ssh_config.Include, baseDir string, seen map[string]struct{}) []*ssh_config.Host {
+	raw := strings.TrimPrefix(include.String(), "Include ")
+	matches, err := filepath.Glob(resolveIncludePath(raw, baseDir))
+	if err != nil {
+		return nil
+	}
+	var hosts []*ssh_config.Host
 	for _, match := range matches {
+		abs, err := filepath.Abs(match)
+		if err != nil {
+			abs = match
+		}
+		if _, dup := seen[abs]; dup {
+			continue // already loaded somewhere up the chain
+		}
 		f, err := os.Open(match)
 		if err != nil {
 			continue
@@ -392,14 +418,16 @@ func handleInclude(include *ssh_config.Include, baseDir string) {
 			f.Close()
 			continue
 		}
-		includedCfg, err := ssh_config.Decode(f)
+		decoded, err := ssh_config.Decode(f)
 		f.Close()
 		if err != nil {
 			continue
 		}
-		// Merge the included config
-		cfg.Hosts = append(cfg.Hosts, includedCfg.Hosts...)
+		// Mark before recursing so a self-referential include terminates.
+		seen[abs] = struct{}{}
+		hosts = append(hosts, resolveIncludes(decoded.Hosts, filepath.Dir(match), seen)...)
 	}
+	return hosts
 }
 
 // validateOpenConfigPerms refuses to parse a config file that another local

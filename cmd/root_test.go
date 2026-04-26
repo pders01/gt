@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/kevinburke/ssh_config"
@@ -271,6 +272,29 @@ func TestRunSCPOmitsEmptyPortAndIdentity(t *testing.T) {
 		"local.txt",
 		"user@bare.example.com:remote/path",
 	}, mockCmd.lastArgs)
+}
+
+func writeConfigFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestLoadConfigResolvesNestedIncludes(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "config")
+	inc1 := filepath.Join(dir, "inc1")
+	inc2 := filepath.Join(dir, "inc2")
+
+	writeConfigFile(t, main, "Host alpha\n  Hostname alpha.example.com\nInclude "+inc1+"\n")
+	writeConfigFile(t, inc1, "Host beta\n  Hostname beta.example.com\nInclude "+inc2+"\n")
+	writeConfigFile(t, inc2, "Host gamma\n  Hostname gamma.example.com\n")
+
+	loadConfig(main)
+
+	got := getHosts()
+	assert.Equal(t, []string{"alpha", "beta", "gamma"}, got)
 }
 
 func TestGetHostsMultiPatternAndDedup(t *testing.T) {

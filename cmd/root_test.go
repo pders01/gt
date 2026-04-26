@@ -273,6 +273,32 @@ func TestRunSCPOmitsEmptyPortAndIdentity(t *testing.T) {
 	}, mockCmd.lastArgs)
 }
 
+func TestGetHostsMultiPatternAndDedup(t *testing.T) {
+	mkPatterns := func(t *testing.T, names ...string) []*ssh_config.Pattern {
+		out := make([]*ssh_config.Pattern, 0, len(names))
+		for _, n := range names {
+			p, err := ssh_config.NewPattern(n)
+			if err != nil {
+				t.Fatalf("NewPattern(%q): %v", n, err)
+			}
+			out = append(out, p)
+		}
+		return out
+	}
+
+	cfg = &ssh_config.Config{
+		Hosts: []*ssh_config.Host{
+			{Patterns: mkPatterns(t, "alpha", "beta", "gamma")},
+			{Patterns: mkPatterns(t, "delta", "*.internal", "?ildcard")},
+			{Patterns: mkPatterns(t, "alpha")}, // duplicate of the first block
+		},
+	}
+
+	got := getHosts()
+	want := []string{"alpha", "beta", "delta", "gamma"}
+	assert.Equal(t, want, got)
+}
+
 func TestCheckConfigOwnerAndMode(t *testing.T) {
 	const me uint32 = 1000
 	const other uint32 = 1234

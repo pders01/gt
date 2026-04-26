@@ -48,13 +48,22 @@ func init() {
 
 func getHosts() []string {
 	var hosts []string
+	seen := map[string]struct{}{}
 	for _, host := range cfg.Hosts {
-		pattern := host.Patterns[0].String()
-		// Skip pattern entries (those with * or ?)
-		if strings.ContainsAny(pattern, "*?") {
-			continue
+		// A single Host block can declare several aliases ("Host foo bar baz");
+		// emit each one and dedupe in case the same alias appears in multiple
+		// blocks across the merged config.
+		for _, p := range host.Patterns {
+			pattern := p.String()
+			if strings.ContainsAny(pattern, "*?") {
+				continue // skip wildcard match patterns
+			}
+			if _, ok := seen[pattern]; ok {
+				continue
+			}
+			seen[pattern] = struct{}{}
+			hosts = append(hosts, pattern)
 		}
-		hosts = append(hosts, pattern)
 	}
 	sort.Strings(hosts)
 	return hosts

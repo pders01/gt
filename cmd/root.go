@@ -329,7 +329,7 @@ func initConfig() {
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting home directory: %v\n", err)
+		errorColor.Fprintf(os.Stderr, "Error getting home directory: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -339,19 +339,19 @@ func initConfig() {
 func loadConfig(path string) {
 	f, err := os.Open(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not open SSH config at %s: %v\n", path, err)
+		errorColor.Fprintf(os.Stderr, "Could not open SSH config at %s: %v\n", path, err)
 		os.Exit(1)
 	}
 	defer f.Close()
 
 	if err := validateOpenConfigPerms(path, f); err != nil {
-		fmt.Fprintf(os.Stderr, "Refusing to load SSH config: %v\n", err)
+		errorColor.Fprintf(os.Stderr, "Refusing to load SSH config: %v\n", err)
 		os.Exit(1)
 	}
 
 	cfg, err = ssh_config.Decode(f)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing SSH config: %v\n", err)
+		errorColor.Fprintf(os.Stderr, "Error parsing SSH config: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -379,7 +379,7 @@ func handleInclude(include *ssh_config.Include, baseDir string) {
 			continue
 		}
 		if err := validateOpenConfigPerms(match, f); err != nil {
-			fmt.Fprintf(os.Stderr, "Skipping include: %v\n", err)
+			warningColor.Fprintf(os.Stderr, "Skipping include: %v\n", err)
 			f.Close()
 			continue
 		}

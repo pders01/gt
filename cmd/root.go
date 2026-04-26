@@ -19,6 +19,7 @@ var (
 	cfg         *ssh_config.Config
 	user        string
 	useScp      bool
+	noLog       bool
 	execCommand = exec.Command
 	// Color outputs using conventional terminal colors
 	aliasColor     = color.New(color.FgBlue, color.Bold) // for the host alias (like ls directories)
@@ -42,8 +43,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "SSH config file (default ~/.ssh/config)")
 	rootCmd.PersistentFlags().StringVarP(&user, "user", "u", "", "override SSH config user")
 	rootCmd.PersistentFlags().BoolVarP(&useScp, "scp", "s", false, "use SCP instead of SSH")
+	rootCmd.PersistentFlags().BoolVar(&noLog, "no-log", false, "skip writing this connection to the audit log")
+
+	logCmd.Flags().IntVarP(&logLimit, "limit", "n", 20, "show at most N most-recent entries (0 = all)")
 
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(logCmd)
 }
 
 func getHosts() []string {
@@ -238,8 +243,7 @@ func runSCP(alias string, address string, files []string) error {
 		args = append(args, dest)
 	}
 
-	cmd := execCommand("scp", args...)
-	return runCommand(cmd)
+	return runCommandLogged(execCommand("scp", args...), alias, address, "scp")
 }
 
 func runSSH(alias, address string, remoteCmd []string) error {
@@ -266,7 +270,7 @@ func runSSH(alias, address string, remoteCmd []string) error {
 	// remote shell verbatim, so no flag-prefix validation is needed there.
 	sshArgs = append(sshArgs, "--", address)
 	sshArgs = append(sshArgs, remoteCmd...)
-	return runCommand(execCommand("ssh", sshArgs...))
+	return runCommandLogged(execCommand("ssh", sshArgs...), alias, address, "ssh")
 }
 
 func runCommand(cmd *exec.Cmd) error {

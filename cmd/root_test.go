@@ -169,6 +169,7 @@ func TestValidateSCPPaths(t *testing.T) {
 
 func TestRunSCP(t *testing.T) {
 	setupTestConfig(t)
+	t.Setenv("GT_LOG_DIR", t.TempDir())
 
 	// Store the original execCommand
 	origExecCommand := execCommand
@@ -244,6 +245,7 @@ func TestRunSCP(t *testing.T) {
 }
 
 func TestRunSCPOmitsEmptyPortAndIdentity(t *testing.T) {
+	t.Setenv("GT_LOG_DIR", t.TempDir())
 	pattern, err := ssh_config.NewPattern("bare")
 	if err != nil {
 		t.Fatalf("Failed to create pattern: %v", err)
@@ -360,6 +362,7 @@ func TestCheckConfigOwnerAndMode(t *testing.T) {
 
 func TestRunSSH(t *testing.T) {
 	setupTestConfig(t)
+	t.Setenv("GT_LOG_DIR", t.TempDir())
 
 	// Store the original execCommand
 	origExecCommand := execCommand

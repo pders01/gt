@@ -14,10 +14,10 @@ import (
 )
 
 var (
-	cfgFile string
-	cfg     *ssh_config.Config
-	user    string
-	useScp  bool
+	cfgFile     string
+	cfg         *ssh_config.Config
+	user        string
+	useScp      bool
 	execCommand = exec.Command
 	// Color outputs using conventional terminal colors
 	aliasColor     = color.New(color.FgBlue, color.Bold) // for the host alias (like ls directories)

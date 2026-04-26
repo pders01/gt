@@ -172,7 +172,7 @@ func TestRunSCP(t *testing.T) {
 	// Store the original execCommand
 	origExecCommand := execCommand
 	defer func() { execCommand = origExecCommand }()
-	
+
 	// Replace execCommand with our mock
 	execCommand = mockCmd.Command
 
@@ -279,7 +279,7 @@ func TestRunSSH(t *testing.T) {
 	// Store the original execCommand
 	origExecCommand := execCommand
 	defer func() { execCommand = origExecCommand }()
-	
+
 	// Replace execCommand with our mock
 	execCommand = mockCmd.Command
 

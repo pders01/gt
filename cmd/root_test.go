@@ -137,6 +137,18 @@ func TestValidateSCPPaths(t *testing.T) {
 			wantErr: true,
 			errMsg:  "local source paths should not contain ':' (got :remote1.txt)",
 		},
+		{
+			name:    "upload local path starting with -",
+			files:   []string{"-oProxyCommand=evil", ":remote/path"},
+			wantErr: true,
+			errMsg:  "local path must not start with '-' (got -oProxyCommand=evil); prefix it with './'",
+		},
+		{
+			name:    "download local destination starting with -",
+			files:   []string{":remote.txt", "-oProxyCommand=evil"},
+			wantErr: true,
+			errMsg:  "local path must not start with '-' (got -oProxyCommand=evil); prefix it with './'",
+		},
 	}
 
 	for _, tt := range tests {
@@ -177,6 +189,7 @@ func TestRunSCP(t *testing.T) {
 				"-P", "2222",
 				"-i", "~/.ssh/test_key",
 				"-p",
+				"--",
 				"local.txt",
 				"testuser@test.example.com:remote/path",
 			},
@@ -188,6 +201,7 @@ func TestRunSCP(t *testing.T) {
 				"-P", "2222",
 				"-i", "~/.ssh/test_key",
 				"-p",
+				"--",
 				"testuser@test.example.com:remote.txt",
 				"local/path",
 			},
@@ -199,6 +213,7 @@ func TestRunSCP(t *testing.T) {
 				"-P", "2222",
 				"-i", "~/.ssh/test_key",
 				"-p",
+				"--",
 				"local1.txt",
 				"local2.txt",
 				"testuser@test.example.com:remote/path",
@@ -227,6 +242,37 @@ func TestRunSCP(t *testing.T) {
 	}
 }
 
+func TestRunSCPOmitsEmptyPortAndIdentity(t *testing.T) {
+	pattern, err := ssh_config.NewPattern("bare")
+	if err != nil {
+		t.Fatalf("Failed to create pattern: %v", err)
+	}
+	cfg = &ssh_config.Config{
+		Hosts: []*ssh_config.Host{
+			{
+				Patterns: []*ssh_config.Pattern{pattern},
+				Nodes: []ssh_config.Node{
+					&ssh_config.KV{Key: "Hostname", Value: "bare.example.com"},
+				},
+			},
+		},
+	}
+
+	origExecCommand := execCommand
+	defer func() { execCommand = origExecCommand }()
+	execCommand = mockCmd.Command
+
+	err = runSCP("bare", "user@bare.example.com", []string{"local.txt", ":remote/path"})
+	assert.NoError(t, err)
+	assert.Equal(t, "scp", mockCmd.lastCommand)
+	assert.Equal(t, []string{
+		"-p",
+		"--",
+		"local.txt",
+		"user@bare.example.com:remote/path",
+	}, mockCmd.lastArgs)
+}
+
 func TestRunSSH(t *testing.T) {
 	setupTestConfig(t)
 
@@ -250,6 +296,7 @@ func TestRunSSH(t *testing.T) {
 			wantArgs: []string{
 				"-p", "2222",
 				"-i", "~/.ssh/test_key",
+				"--",
 				"testuser@test.example.com",
 			},
 		},

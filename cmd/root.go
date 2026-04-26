@@ -153,6 +153,13 @@ Examples:
 			connectUser = "root"
 		}
 
+		if err := validateNoFlagPrefix("user", connectUser); err != nil {
+			return err
+		}
+		if err := validateNoFlagPrefix("hostname", hostname); err != nil {
+			return err
+		}
+
 		address := fmt.Sprintf("%s@%s", connectUser, hostname)
 
 		if useScp {
@@ -178,14 +185,25 @@ func runSCP(alias string, address string, files []string) error {
 		return fmt.Errorf("SSH config is not initialized")
 	}
 
-	port, _ := cfg.Get(alias, "Port")
-	identityFile, _ := cfg.Get(alias, "IdentityFile")
+	args := []string{}
 
-	args := []string{
-		"-P", port,
-		"-i", identityFile,
-		"-p", // preserve file attributes
+	port, _ := cfg.Get(alias, "Port")
+	if port != "" {
+		if err := validateNoFlagPrefix("port", port); err != nil {
+			return err
+		}
+		args = append(args, "-P", port)
 	}
+
+	identityFile, _ := cfg.Get(alias, "IdentityFile")
+	if identityFile != "" {
+		if err := validateNoFlagPrefix("identity file", identityFile); err != nil {
+			return err
+		}
+		args = append(args, "-i", identityFile)
+	}
+
+	args = append(args, "-p", "--") // -p preserves attributes; -- ends option parsing
 
 	dest := files[len(files)-1]
 	if strings.HasPrefix(dest, ":") {
@@ -209,15 +227,21 @@ func runSSH(alias, address string) error {
 
 	port, _ := cfg.Get(alias, "Port")
 	if port != "" {
+		if err := validateNoFlagPrefix("port", port); err != nil {
+			return err
+		}
 		sshArgs = append(sshArgs, "-p", port)
 	}
 
 	identity, _ := cfg.Get(alias, "IdentityFile")
 	if identity != "" {
+		if err := validateNoFlagPrefix("identity file", identity); err != nil {
+			return err
+		}
 		sshArgs = append(sshArgs, "-i", identity)
 	}
 
-	sshArgs = append(sshArgs, address)
+	sshArgs = append(sshArgs, "--", address)
 	return runCommand(execCommand("ssh", sshArgs...))
 }
 
@@ -226,6 +250,13 @@ func runCommand(cmd *exec.Cmd) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func validateNoFlagPrefix(name, value string) error {
+	if strings.HasPrefix(value, "-") {
+		return fmt.Errorf("%s must not start with '-' (got %q)", name, value)
+	}
+	return nil
 }
 
 func validateSCPPaths(files []string) error {
@@ -243,15 +274,23 @@ func validateSCPPaths(files []string) error {
 				return fmt.Errorf("download paths must start with ':' (got %s)", files[i])
 			}
 		}
+		local := files[len(files)-1]
 		// The last path (destination) must not start with :
-		if strings.HasPrefix(files[len(files)-1], ":") {
-			return fmt.Errorf("local destination path must not start with ':' (got %s)", files[len(files)-1])
+		if strings.HasPrefix(local, ":") {
+			return fmt.Errorf("local destination path must not start with ':' (got %s)", local)
+		}
+		if strings.HasPrefix(local, "-") {
+			return fmt.Errorf("local path must not start with '-' (got %s); prefix it with './'", local)
 		}
 	} else {
 		// For uploads, all source paths must not start with :
 		for i := 0; i < len(files)-1; i++ {
-			if strings.HasPrefix(files[i], ":") {
-				return fmt.Errorf("local source paths should not contain ':' (got %s)", files[i])
+			src := files[i]
+			if strings.HasPrefix(src, ":") {
+				return fmt.Errorf("local source paths should not contain ':' (got %s)", src)
+			}
+			if strings.HasPrefix(src, "-") {
+				return fmt.Errorf("local path must not start with '-' (got %s); prefix it with './'", src)
 			}
 		}
 		// The last path (destination) must start with :

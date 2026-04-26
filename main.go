@@ -1,7 +1,13 @@
 package main
 
-import "gt/cmd"
+import (
+	"os"
+
+	"gt/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	if err := cmd.Execute(); err != nil {
+		os.Exit(1)
+	}
 }

@@ -70,6 +70,10 @@ Includes entries from included config files.`,
 			warningColor.Println("No SSH hosts found")
 			return nil
 		}
+
+		type row struct{ alias, hostname, user, port string }
+		rows := make([]row, 0, len(hosts))
+		aliasWidth := 0
 		for _, host := range hosts {
 			hostname, _ := cfg.Get(host, "Hostname")
 			if hostname == "" {
@@ -80,14 +84,21 @@ Includes entries from included config files.`,
 				user = "root"
 			}
 			port, _ := cfg.Get(host, "Port")
+			rows = append(rows, row{host, hostname, user, port})
+			if len(host) > aliasWidth {
+				aliasWidth = len(host)
+			}
+		}
+		aliasWidth++ // single-space gutter after the longest alias
 
+		for _, r := range rows {
 			// Format: alias    user@host.subdomain.domain:port
-			aliasColor.Printf("%-20s ", host)
-			userColor.Print(user)
+			aliasColor.Printf("%-*s", aliasWidth, r.alias)
+			userColor.Print(r.user)
 			symbolColor.Print("@")
 
 			// Split hostname into parts and color each differently
-			parts := strings.Split(hostname, ".")
+			parts := strings.Split(r.hostname, ".")
 			for i, part := range parts {
 				if i > 0 {
 					symbolColor.Print(".")
@@ -105,9 +116,9 @@ Includes entries from included config files.`,
 			}
 
 			// Add port if specified and not default
-			if port != "" && port != "22" {
+			if r.port != "" && r.port != "22" {
 				symbolColor.Print(":")
-				portColor.Print(port)
+				portColor.Print(r.port)
 			}
 
 			fmt.Println() // New line

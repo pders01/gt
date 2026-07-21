@@ -67,6 +67,13 @@ func getHosts() []string {
 			if strings.ContainsAny(pattern, "*?") {
 				continue // skip wildcard match patterns
 			}
+			// Pattern.String() strips a leading "!", so exclusions are not
+			// detectable from the text. Ask the block instead: a negated
+			// pattern never matches its own alias, which filters entries
+			// like the "!backup" in "Host web !backup".
+			if !host.Matches(pattern) {
+				continue
+			}
 			if _, ok := seen[pattern]; ok {
 				continue
 			}
@@ -261,9 +268,13 @@ func knownHost(alias string) bool {
 	return false
 }
 
+// hasSpecificPattern reports whether the block names anything beyond the
+// catch-all "*". Pattern.String() strips negation, so a non-"*" pattern
+// counts only if the block would actually apply to it — this keeps a pure
+// exclusion block like "Host * !secret" classified as a catch-all.
 func hasSpecificPattern(host *ssh_config.Host) bool {
 	for _, p := range host.Patterns {
-		if strings.TrimPrefix(p.String(), "!") != "*" {
+		if s := p.String(); s != "*" && host.Matches(s) {
 			return true
 		}
 	}

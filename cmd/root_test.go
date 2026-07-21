@@ -372,12 +372,13 @@ func TestGetHostsMultiPatternAndDedup(t *testing.T) {
 		Hosts: []*ssh_config.Host{
 			{Patterns: mkPatterns(t, "alpha", "beta", "gamma")},
 			{Patterns: mkPatterns(t, "delta", "*.internal", "?ildcard")},
-			{Patterns: mkPatterns(t, "alpha")}, // duplicate of the first block
+			{Patterns: mkPatterns(t, "alpha")},              // duplicate of the first block
+			{Patterns: mkPatterns(t, "epsilon", "!backup")}, // negation is an exclusion, not an alias
 		},
 	}
 
 	got := getHosts()
-	want := []string{"alpha", "beta", "delta", "gamma"}
+	want := []string{"alpha", "beta", "delta", "epsilon", "gamma"}
 	assert.Equal(t, want, got)
 }
 

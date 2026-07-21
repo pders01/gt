@@ -306,6 +306,35 @@ func TestConditionalIncludeFilteredByEnclosingBlock(t *testing.T) {
 	assert.False(t, knownHost("other"))
 }
 
+func TestLoadConfigToleratesMatchBlocks(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "config")
+	inc := filepath.Join(dir, "extra")
+
+	writeConfigFile(t, inc, "Host hidden\n  Hostname hidden.example.com\n")
+	// The ssh_config library rejects Match outright, so gt must strip the
+	// blocks before decoding. A Host line ends a Match block; everything
+	// inside one is skipped, including conditional Includes.
+	writeConfigFile(t, main, `Host alpha
+  Hostname alpha.example.com
+
+Match host "*.internal.example.com"
+  ProxyJump bastion
+  Include `+inc+`
+
+Host beta
+  Hostname beta.example.com
+
+Match all
+  ServerAliveInterval 60
+`)
+
+	loadConfig(main)
+
+	assert.Equal(t, []string{"alpha", "beta"}, getHosts())
+	assert.False(t, knownHost("hidden"), "Include inside a Match block must not be expanded")
+}
+
 func TestRelativeIncludeResolvesAgainstSSHDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

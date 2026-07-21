@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -417,7 +418,7 @@ func loadConfig(path string) {
 		os.Exit(1)
 	}
 
-	decoded, err := ssh_config.Decode(f)
+	decoded, err := decodeConfig(f)
 	if err != nil {
 		errorColor.Fprintf(os.Stderr, "Error parsing SSH config: %v\n", err)
 		os.Exit(1)
@@ -428,6 +429,52 @@ func loadConfig(path string) {
 		seen[abs] = struct{}{}
 	}
 	cfg = &ssh_config.Config{Hosts: resolveIncludes(decoded.Hosts, seen)}
+}
+
+// decodeConfig parses an SSH config stream, first dropping Match blocks,
+// which the ssh_config library rejects outright ("Match directive parsing
+// is unsupported") even though OpenSSH accepts them. gt only needs Host
+// patterns for alias enumeration and a Match block cannot declare aliases,
+// so skipping the block is faithful. Its body — including any conditional
+// Includes, whose criteria gt could not evaluate anyway — is dropped;
+// OpenSSH still applies all of it at connection time.
+func decodeConfig(r io.Reader) (*ssh_config.Config, error) {
+	var filtered bytes.Buffer
+	sc := bufio.NewScanner(r)
+	skipping := false
+	for sc.Scan() {
+		line := sc.Text()
+		switch configKeyword(line) {
+		case "match":
+			skipping = true
+			continue
+		case "host":
+			skipping = false
+		}
+		if skipping {
+			continue
+		}
+		filtered.WriteString(line)
+		filtered.WriteByte('\n')
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return ssh_config.Decode(&filtered)
+}
+
+// configKeyword returns the lowercased leading keyword of a config line,
+// or "" for blanks and comments. Keywords may be separated from their
+// arguments by whitespace or '='.
+func configKeyword(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return ""
+	}
+	if i := strings.IndexAny(trimmed, " \t="); i >= 0 {
+		trimmed = trimmed[:i]
+	}
+	return strings.ToLower(trimmed)
 }
 
 // resolveIncludes walks the host list and replaces every Include node with
@@ -522,7 +569,7 @@ func expandInclude(include *ssh_config.Include, seen map[string]struct{}) []*ssh
 			f.Close()
 			continue
 		}
-		decoded, err := ssh_config.Decode(f)
+		decoded, err := decodeConfig(f)
 		f.Close()
 		if err != nil {
 			continue

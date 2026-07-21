@@ -1,15 +1,15 @@
 # gt - A simple SSH connection manager
 
-gt is a small UX layer over OpenSSH. It reads your existing SSH config to list and tab-complete host aliases, adds a colon shorthand for scp, and keeps a local audit log of every connection — then hands the alias straight to `ssh`/`scp`, so OpenSSH resolves the config and owns the connection.
+gt is a small UX layer over OpenSSH. It reads your existing SSH config to list and tab-complete host aliases, adds a colon shorthand for scp, and keeps a local audit log of every connection — then hands the alias straight to [`ssh`](https://man.openbsd.org/ssh.1)/[`scp`](https://man.openbsd.org/scp.1), so OpenSSH resolves the config and owns the connection.
 
 ## Features
 
 - Direct connection to hosts from your SSH config
 - Colorful, readable output
-- List available SSH hosts with user and hostname info (resolved by `ssh -G`)
-- Automatic handling of SSH config includes (including nested chains)
+- List available SSH hosts with user and hostname info (resolved by [`ssh -G`](https://man.openbsd.org/ssh.1#G))
+- Automatic handling of SSH config [includes](https://man.openbsd.org/ssh_config.5#Include) (including nested chains)
 - Strict-mode permission check on the SSH config and every Include
-- OpenSSH owns connection semantics: the alias is passed through unresolved, so ProxyJump, Match blocks, canonicalization, multiple IdentityFiles, and every other option behave exactly as with plain `ssh`
+- OpenSSH owns connection semantics: the alias is passed through unresolved, so [ProxyJump](https://man.openbsd.org/ssh_config.5#ProxyJump), [Match](https://man.openbsd.org/ssh_config.5#Match) blocks, [canonicalization](https://man.openbsd.org/ssh_config.5#CanonicalizeHostname), multiple IdentityFiles, and every other [ssh_config(5)](https://man.openbsd.org/ssh_config.5) option behave exactly as with plain `ssh`
 - User override capability
 - SCP support
 - Shell completion for hosts
@@ -87,6 +87,12 @@ through `jq` directly against the JSONL file for richer queries.
 
 ### Options
 
+- `-u, --user`: Override SSH config user
+- `-s, --scp`: Use SCP instead of SSH
+- `--config`: Specify custom SSH config file path
+- `--no-log`: Skip the audit log for this connection
+- `--help`: Show help message
+
 ```bash
 gt -u root <host>       # Connect as root user
 gt -s <host>            # Use SCP instead of SSH
@@ -163,21 +169,14 @@ The rules that make this the safe shape:
   ask.
 
 For defaults that should only apply to *some* hosts, scope them with a
-`Match host` or wildcard `Host` block instead of `Host *` — see
-[ssh_config(5)](https://man.openbsd.org/ssh_config.5) for the full matching
-and pattern semantics rather than relying on this summary.
+[`Match host`](https://man.openbsd.org/ssh_config.5#Match) or wildcard
+[`Host`](https://man.openbsd.org/ssh_config.5#Host) block instead of `Host *` —
+see the [PATTERNS section of ssh_config(5)](https://man.openbsd.org/ssh_config.5#PATTERNS)
+for the full matching semantics rather than relying on this summary.
 
 When resolution surprises you, `ssh -Gv <alias> 2>&1 | grep -iE 'reading
 configuration|applying options'` shows every file ssh opens and every block it
 applies, in order — that plus first-value-wins explains nearly everything.
-
-## Options
-
-- `-u, --user`: Override SSH config user
-- `-s, --scp`: Use SCP instead of SSH
-- `--config`: Specify custom SSH config file path
-- `--no-log`: Skip the audit log for this connection
-- `--help`: Show help message
 
 ## License
 

@@ -117,6 +117,60 @@ Host prod
     IdentityFile ~/.ssh/prod_key
 ```
 
+### Structuring your config: Include pitfalls
+
+Because gt delegates to OpenSSH, it inherits ssh_config's sharp edges too. The
+rules below are OpenSSH semantics, not gt inventions — gt just mirrors them
+faithfully, so a config that misbehaves under plain `ssh` misbehaves
+identically under gt. A layout that avoids all of them:
+
+```ssh-config
+# ~/.ssh/config
+Include ~/.ssh/config.d/hosts   # 1. all Include lines first, before any Host/Match line
+
+Host example                    # 2. the main file's own entries
+    HostName example.com
+
+Host *                          # 3. global defaults: a literal block, the LAST thing read
+    ServerAliveInterval 60
+```
+
+The rules that make this the safe shape:
+
+- **First value wins.** For every option, ssh uses the first value it reads,
+  not the last. A `Host *` block read last provides defaults that per-host
+  entries can override; read first, it silently overrides everything after it.
+- **An `Include` after any `Host` or `Match` line is conditional.** Blocks only
+  end where the next block begins, so an `Include` below a host entry belongs
+  to that entry's block and its entire content — including its own `Host`
+  lines — applies only when that block matches. Debug output (`ssh -Gv`) still
+  shows the file as *read*, which makes this easy to misdiagnose. Keep
+  includes above the first block.
+- **Consequently, `Host *` defaults don't belong in an include** unless
+  nothing follows the `Include` line in the main file: at the top they
+  override later entries, at the bottom they're conditional. A literal
+  `Host *` block at the end of the main config is the robust form.
+- **Headerless lines in an included file** attach to whatever block context is
+  active at the `Include` line. Start included files with a `Host` or `Match`
+  header.
+- **Relative `Include` paths resolve against `~/.ssh`**, never against the
+  directory of the including file. Missing include files are skipped silently.
+- **ssh lowercases the host argument before matching**, so aliases with
+  uppercase letters in `Host` patterns never match. Keep aliases lowercase.
+- **Some options accumulate instead of overriding** (`IdentityFile`,
+  `CertificateFile`, `LocalForward`, `RemoteForward`): a later value is
+  appended, not ignored — which can look like either, depending on when you
+  ask.
+
+For defaults that should only apply to *some* hosts, scope them with a
+`Match host` or wildcard `Host` block instead of `Host *` — see
+[ssh_config(5)](https://man.openbsd.org/ssh_config.5) for the full matching
+and pattern semantics rather than relying on this summary.
+
+When resolution surprises you, `ssh -Gv <alias> 2>&1 | grep -iE 'reading
+configuration|applying options'` shows every file ssh opens and every block it
+applies, in order — that plus first-value-wins explains nearly everything.
+
 ## Options
 
 - `-u, --user`: Override SSH config user

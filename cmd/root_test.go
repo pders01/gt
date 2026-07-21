@@ -276,14 +276,54 @@ func TestLoadConfigResolvesNestedIncludes(t *testing.T) {
 	inc1 := filepath.Join(dir, "inc1")
 	inc2 := filepath.Join(dir, "inc2")
 
-	writeConfigFile(t, main, "Host alpha\n  Hostname alpha.example.com\nInclude "+inc1+"\n")
-	writeConfigFile(t, inc1, "Host beta\n  Hostname beta.example.com\nInclude "+inc2+"\n")
+	// Includes sit before any Host line: an Include after a Host block is
+	// conditional in OpenSSH and would (correctly) not merge here.
+	writeConfigFile(t, main, "Include "+inc1+"\n\nHost alpha\n  Hostname alpha.example.com\n")
+	writeConfigFile(t, inc1, "Include "+inc2+"\n\nHost beta\n  Hostname beta.example.com\n")
 	writeConfigFile(t, inc2, "Host gamma\n  Hostname gamma.example.com\n")
 
 	loadConfig(main)
 
 	got := getHosts()
 	assert.Equal(t, []string{"alpha", "beta", "gamma"}, got)
+}
+
+func TestConditionalIncludeFilteredByEnclosingBlock(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "config")
+	inc := filepath.Join(dir, "cond")
+
+	writeConfigFile(t, inc, "Host gw-1\n  Hostname gw1.example.com\n\nHost other\n  Hostname other.example.com\n")
+	// The Include sits inside the "Host gw-*" block, so OpenSSH applies its
+	// content only when the queried host matches gw-*. Aliases the enclosing
+	// block cannot match must not be enumerated or vouched for.
+	writeConfigFile(t, main, "Host gw-*\n  User gateway\n  Include "+inc+"\n")
+
+	loadConfig(main)
+
+	assert.Equal(t, []string{"gw-1"}, getHosts())
+	assert.True(t, knownHost("gw-1"))
+	assert.False(t, knownHost("other"))
+}
+
+func TestRelativeIncludeResolvesAgainstSSHDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", sshDir, err)
+	}
+	writeConfigFile(t, filepath.Join(sshDir, "extra"), "Host relhost\n  Hostname rel.example.com\n")
+
+	// The main config lives outside ~/.ssh on purpose: OpenSSH resolves a
+	// relative Include against ~/.ssh regardless of the including file's
+	// location, and gt must agree.
+	main := filepath.Join(home, "mainconfig")
+	writeConfigFile(t, main, "Include extra\n\nHost alpha\n  Hostname alpha.example.com\n")
+
+	loadConfig(main)
+
+	assert.Equal(t, []string{"alpha", "relhost"}, getHosts())
 }
 
 func TestGetHostsMultiPatternAndDedup(t *testing.T) {

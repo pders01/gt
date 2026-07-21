@@ -427,18 +427,21 @@ func loadConfig(path string) {
 	if abs, err := filepath.Abs(path); err == nil {
 		seen[abs] = struct{}{}
 	}
-	cfg = &ssh_config.Config{Hosts: resolveIncludes(decoded.Hosts, filepath.Dir(path), seen)}
+	cfg = &ssh_config.Config{Hosts: resolveIncludes(decoded.Hosts, seen)}
 }
 
 // resolveIncludes walks the host list and replaces every Include node with
 // the hosts it resolves to, recursively. Includes inside included files are
 // expanded the same way, so chains like main -> ~/.ssh/config.d/* -> shared
-// load fully. seen holds absolute paths of files already merged so a cycle
-// terminates instead of looping forever. Note: the underlying library has
-// its own depth-5 guard inside Decode, which catches absolute-path cycles
-// before this layer ever sees them; our seen set covers cycles formed by
-// relative-path includes where library and gt resolve to different paths.
-func resolveIncludes(hosts []*ssh_config.Host, baseDir string, seen map[string]struct{}) []*ssh_config.Host {
+// load fully. An Include that sits inside a Host block is conditional in
+// OpenSSH — its content only applies when the enclosing block matches the
+// queried host — so hosts expanded from one are filtered through the
+// enclosing block's patterns rather than merged wholesale. seen holds
+// absolute paths of files already merged so a cycle terminates instead of
+// looping forever. Note: the underlying library has its own depth-5 guard
+// inside Decode, which catches absolute-path cycles before this layer ever
+// sees them; our seen set covers cycles it resolves differently than gt.
+func resolveIncludes(hosts []*ssh_config.Host, seen map[string]struct{}) []*ssh_config.Host {
 	out := make([]*ssh_config.Host, 0, len(hosts))
 	for _, host := range hosts {
 		out = append(out, host)
@@ -447,17 +450,59 @@ func resolveIncludes(hosts []*ssh_config.Host, baseDir string, seen map[string]s
 			if !ok {
 				continue
 			}
-			out = append(out, expandInclude(include, baseDir, seen)...)
+			out = append(out, filterConditional(host, expandInclude(include, seen))...)
 		}
 	}
 	return out
 }
 
-func expandInclude(include *ssh_config.Include, baseDir string, seen map[string]struct{}) []*ssh_config.Host {
-	raw := strings.TrimPrefix(include.String(), "Include ")
-	matches, err := filepath.Glob(resolveIncludePath(raw, baseDir))
-	if err != nil {
-		return nil
+// filterConditional applies OpenSSH's conditional-include semantics to
+// hosts expanded from an Include node found inside the enclosing block.
+// The catch-all block (the library's implicit top-of-file "Host *", or an
+// explicit one) matches every query, so its includes pass through intact.
+// Anything else only takes effect when the enclosing block matches, so an
+// alias is kept only if the enclosing block would match it too.
+func filterConditional(enclosing *ssh_config.Host, hosts []*ssh_config.Host) []*ssh_config.Host {
+	if len(enclosing.Patterns) == 1 && enclosing.Patterns[0].String() == "*" {
+		return hosts
+	}
+	var out []*ssh_config.Host
+	for _, h := range hosts {
+		var kept []*ssh_config.Pattern
+		for _, p := range h.Patterns {
+			if enclosing.Matches(p.String()) {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) > 0 {
+			out = append(out, &ssh_config.Host{Patterns: kept, Nodes: h.Nodes})
+		}
+	}
+	return out
+}
+
+// includeDirectives extracts the path arguments from an Include node.
+// The node's String() renders the whole config line — leading indentation,
+// optional "=", trailing comment — so strip the decoration down to the
+// space-separated paths. An Include line may name several.
+func includeDirectives(include *ssh_config.Include) []string {
+	line := strings.TrimSpace(include.String())
+	if i := strings.Index(line, "#"); i >= 0 {
+		line = line[:i]
+	}
+	line = strings.TrimSpace(strings.TrimPrefix(line, "Include"))
+	line = strings.TrimPrefix(line, "=")
+	return strings.Fields(line)
+}
+
+func expandInclude(include *ssh_config.Include, seen map[string]struct{}) []*ssh_config.Host {
+	var matches []string
+	for _, directive := range includeDirectives(include) {
+		expanded, err := filepath.Glob(resolveIncludePath(directive))
+		if err != nil {
+			continue
+		}
+		matches = append(matches, expanded...)
 	}
 	var hosts []*ssh_config.Host
 	for _, match := range matches {
@@ -484,7 +529,7 @@ func expandInclude(include *ssh_config.Include, baseDir string, seen map[string]
 		}
 		// Mark before recursing so a self-referential include terminates.
 		seen[abs] = struct{}{}
-		hosts = append(hosts, resolveIncludes(decoded.Hosts, filepath.Dir(match), seen)...)
+		hosts = append(hosts, resolveIncludes(decoded.Hosts, seen)...)
 	}
 	return hosts
 }
@@ -517,18 +562,19 @@ func checkConfigOwnerAndMode(path string, fileUID uint32, mode os.FileMode, runn
 	return nil
 }
 
-func resolveIncludePath(path, baseDir string) string {
-	// Handle ~ in path
-	if strings.HasPrefix(path, "~") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		path = filepath.Join(home, path[1:])
+// resolveIncludePath mirrors OpenSSH: "~" expands to the home directory,
+// and relative paths resolve against ~/.ssh — never against the directory
+// of the including file, no matter where that file lives.
+func resolveIncludePath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
 	}
-	// Handle relative paths
+	if strings.HasPrefix(path, "~") {
+		return filepath.Join(home, path[1:])
+	}
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(baseDir, path)
+		return filepath.Join(home, ".ssh", path)
 	}
 	return path
 }

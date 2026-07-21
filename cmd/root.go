@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/fatih/color"
@@ -74,11 +77,73 @@ func getHosts() []string {
 	return hosts
 }
 
+// resolvedHost holds the values OpenSSH reports for an alias via ssh -G.
+type resolvedHost struct {
+	user     string
+	hostname string
+	port     string
+}
+
+// resolveHost asks OpenSSH what an alias resolves to instead of
+// reimplementing config resolution. ssh -G prints the fully resolved
+// client configuration as "key value" lines without connecting, so
+// Match blocks, canonicalization, and future options all behave exactly
+// as they would for a real connection.
+func resolveHost(alias string) (resolvedHost, error) {
+	args := append(sshBaseArgs(), "-G", "--", alias)
+	out, err := execCommand("ssh", args...).Output()
+	if err != nil {
+		return resolvedHost{}, fmt.Errorf("ssh -G %s: %w", alias, err)
+	}
+	var r resolvedHost
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		key, value, _ := strings.Cut(sc.Text(), " ")
+		switch key {
+		case "user":
+			r.user = value
+		case "hostname":
+			r.hostname = value
+		case "port":
+			r.port = value
+		}
+	}
+	return r, nil
+}
+
+type listRow struct {
+	alias string
+	resolvedHost
+	err error
+}
+
+// resolveListRows queries ssh -G for every alias. Each query is a
+// subprocess, so run a handful at a time rather than either one ssh per
+// host all at once or a serial crawl through a large config.
+func resolveListRows(hosts []string) []listRow {
+	rows := make([]listRow, len(hosts))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i, alias := range hosts {
+		wg.Add(1)
+		go func(i int, alias string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			resolved, err := resolveHost(alias)
+			rows[i] = listRow{alias: alias, resolvedHost: resolved, err: err}
+		}(i, alias)
+	}
+	wg.Wait()
+	return rows
+}
+
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all hosts from SSH config",
 	Long: `List all hosts defined in your SSH config file.
-Includes entries from included config files.`,
+Includes entries from included config files.
+Resolved values (user, hostname, port) come from ssh -G.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		hosts := getHosts()
 		if len(hosts) == 0 {
@@ -86,22 +151,12 @@ Includes entries from included config files.`,
 			return nil
 		}
 
-		type row struct{ alias, hostname, user, port string }
-		rows := make([]row, 0, len(hosts))
+		rows := resolveListRows(hosts)
+
 		aliasWidth := 0
-		for _, host := range hosts {
-			hostname, _ := cfg.Get(host, "Hostname")
-			if hostname == "" {
-				continue // Skip pattern entries without hostnames
-			}
-			user, _ := cfg.Get(host, "User")
-			if user == "" {
-				user = "root"
-			}
-			port, _ := cfg.Get(host, "Port")
-			rows = append(rows, row{host, hostname, user, port})
-			if len(host) > aliasWidth {
-				aliasWidth = len(host)
+		for _, r := range rows {
+			if len(r.alias) > aliasWidth {
+				aliasWidth = len(r.alias)
 			}
 		}
 		aliasWidth++ // single-space gutter after the longest alias
@@ -109,6 +164,10 @@ Includes entries from included config files.`,
 		for _, r := range rows {
 			// Format: alias    user@host.subdomain.domain:port
 			aliasColor.Printf("%-*s", aliasWidth, r.alias)
+			if r.err != nil {
+				warningColor.Println("(could not resolve)")
+				continue
+			}
 			userColor.Print(r.user)
 			symbolColor.Print("@")
 
@@ -144,10 +203,11 @@ Includes entries from included config files.`,
 
 var rootCmd = &cobra.Command{
 	Use:   "gt [alias] [file...]",
-	Short: "gt is a simple SSH connection manager",
-	Long: `gt simplifies SSH connections by using your existing SSH config.
-It reads Host definitions from ~/.ssh/config and provides a simpler interface
-for connecting to your hosts.
+	Short: "gt is a small UX layer over OpenSSH",
+	Long: `gt is a small UX layer over OpenSSH. It lists and tab-completes the
+Host aliases in ~/.ssh/config, adds a colon shorthand for scp, and keeps a
+local audit log — the alias itself is handed to ssh/scp, so OpenSSH resolves
+the config and owns the connection.
 
 Examples:
   # Connect to a host defined in ~/.ssh/config
@@ -169,33 +229,59 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		alias := args[0]
 
-		hostname, err := cfg.Get(alias, "Hostname")
-		if err != nil || hostname == "" {
+		if !knownHost(alias) {
 			return fmt.Errorf("host '%s' not found in SSH config", alias)
 		}
-
-		connectUser := user
-		if connectUser == "" {
-			connectUser, _ = cfg.Get(alias, "User")
+		if user != "" {
+			if err := validateNoFlagPrefix("user", user); err != nil {
+				return err
+			}
 		}
-		if connectUser == "" {
-			connectUser = "root"
-		}
-
-		if err := validateNoFlagPrefix("user", connectUser); err != nil {
-			return err
-		}
-		if err := validateNoFlagPrefix("hostname", hostname); err != nil {
-			return err
-		}
-
-		address := fmt.Sprintf("%s@%s", connectUser, hostname)
 
 		if useScp {
-			return runSCP(alias, address, args[1:])
+			return runSCP(alias, args[1:])
 		}
-		return runSSH(alias, address, args[1:])
+		return runSSH(alias, args[1:])
 	},
+}
+
+// knownHost reports whether alias is addressed by a Host block in the
+// config, so a typo fails with a clear error instead of a DNS lookup on
+// the raw alias. Blocks whose only patterns are the catch-all "*" are
+// ignored: those hold global defaults and would make every alias look
+// valid. Wildcard blocks like "Host web-*" still count, and OpenSSH
+// resolves the actual options at exec time.
+func knownHost(alias string) bool {
+	for _, host := range cfg.Hosts {
+		if hasSpecificPattern(host) && host.Matches(alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSpecificPattern(host *ssh_config.Host) bool {
+	for _, p := range host.Patterns {
+		if strings.TrimPrefix(p.String(), "!") != "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// sshBaseArgs returns the flags shared by every ssh/scp/ssh -G
+// invocation gt makes: the alternate config file and the user override.
+// Everything else is deliberately left to OpenSSH, which resolves the
+// alias against the config itself.
+func sshBaseArgs() []string {
+	var args []string
+	if cfgFile != "" {
+		args = append(args, "-F", cfgFile)
+	}
+	if user != "" {
+		args = append(args, "-o", "User="+user)
+	}
+	return args
 }
 
 func completeHosts(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -205,72 +291,41 @@ func completeHosts(cmd *cobra.Command, args []string, toComplete string) ([]stri
 	return getHosts(), cobra.ShellCompDirectiveNoFileComp
 }
 
-func runSCP(alias string, address string, files []string) error {
+func runSCP(alias string, files []string) error {
 	if err := validateSCPPaths(files); err != nil {
 		return err
 	}
 
-	args := []string{}
-
-	port, _ := cfg.Get(alias, "Port")
-	if port != "" {
-		if err := validateNoFlagPrefix("port", port); err != nil {
-			return err
-		}
-		args = append(args, "-P", port)
-	}
-
-	identityFile, _ := cfg.Get(alias, "IdentityFile")
-	if identityFile != "" {
-		if err := validateNoFlagPrefix("identity file", identityFile); err != nil {
-			return err
-		}
-		args = append(args, "-i", identityFile)
-	}
-
+	// scp reads ssh_config itself, so passing alias:path leaves port,
+	// identity, ProxyJump, and everything else to OpenSSH.
+	args := sshBaseArgs()
 	args = append(args, "-p", "--") // -p preserves attributes; -- ends option parsing
 
 	dest := files[len(files)-1]
 	if strings.HasPrefix(dest, ":") {
 		// Upload: Add all source files then the remote destination
 		args = append(args, files[:len(files)-1]...)
-		args = append(args, address+dest)
+		args = append(args, alias+dest)
 	} else {
 		// Download: Add remote sources then local destination
 		for _, src := range files[:len(files)-1] {
-			args = append(args, address+src)
+			args = append(args, alias+src)
 		}
 		args = append(args, dest)
 	}
 
-	return runCommandLogged(execCommand("scp", args...), alias, address, "scp")
+	return runCommandLogged(execCommand("scp", args...), alias, "scp")
 }
 
-func runSSH(alias, address string, remoteCmd []string) error {
-	sshArgs := []string{}
-
-	port, _ := cfg.Get(alias, "Port")
-	if port != "" {
-		if err := validateNoFlagPrefix("port", port); err != nil {
-			return err
-		}
-		sshArgs = append(sshArgs, "-p", port)
-	}
-
-	identity, _ := cfg.Get(alias, "IdentityFile")
-	if identity != "" {
-		if err := validateNoFlagPrefix("identity file", identity); err != nil {
-			return err
-		}
-		sshArgs = append(sshArgs, "-i", identity)
-	}
-
-	// After --, ssh treats the next arg as user@host and everything after
-	// as the remote command. The remote-cmd args are forwarded to the
-	// remote shell verbatim, so no flag-prefix validation is needed there.
-	sshArgs = append(sshArgs, "--", address)
+func runSSH(alias string, remoteCmd []string) error {
+	// After --, ssh treats the next arg as the destination and everything
+	// after as the remote command, forwarded to the remote shell verbatim.
+	// The alias goes through unresolved so ssh matches Host blocks against
+	// it, exactly as a plain `ssh alias` would.
+	sshArgs := sshBaseArgs()
+	sshArgs = append(sshArgs, "--", alias)
 	sshArgs = append(sshArgs, remoteCmd...)
-	return runCommandLogged(execCommand("ssh", sshArgs...), alias, address, "ssh")
+	return runCommandLogged(execCommand("ssh", sshArgs...), alias, "ssh")
 }
 
 func runCommand(cmd *exec.Cmd) error {

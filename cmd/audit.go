@@ -68,10 +68,24 @@ func appendAuditEntry(e auditEntry) error {
 	return err
 }
 
+// auditAddress renders user@hostname for the log by asking OpenSSH how
+// it resolved the alias. Best-effort: if ssh -G fails, the alias alone
+// still identifies the connection.
+func auditAddress(alias string) string {
+	r, err := resolveHost(alias)
+	if err != nil || r.hostname == "" {
+		return alias
+	}
+	if r.user == "" {
+		return r.hostname
+	}
+	return r.user + "@" + r.hostname
+}
+
 // runCommandLogged wraps runCommand with timing and audit-log emission.
 // Auditing is best-effort: if the log write fails (disk full, perms,
 // missing parent) we surface a warning but do not fail the connection.
-func runCommandLogged(cmd *exec.Cmd, alias, address, mode string) error {
+func runCommandLogged(cmd *exec.Cmd, alias, mode string) error {
 	start := time.Now()
 	err := runCommand(cmd)
 	if noLog {
@@ -93,7 +107,7 @@ func runCommandLogged(cmd *exec.Cmd, alias, address, mode string) error {
 		Start:      start,
 		End:        end,
 		Alias:      alias,
-		Address:    address,
+		Address:    auditAddress(alias),
 		Mode:       mode,
 		ExitCode:   exitCode,
 		DurationMS: end.Sub(start).Milliseconds(),

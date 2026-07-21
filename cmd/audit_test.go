@@ -106,11 +106,9 @@ func TestRunCommandLoggedRespectsNoLog(t *testing.T) {
 	defer func() { noLog = origNoLog }()
 	noLog = true
 
-	origExecCommand := execCommand
-	defer func() { execCommand = origExecCommand }()
-	execCommand = mockCmd.Command
+	useMockExec(t)
 
-	err := runCommandLogged(execCommand("ssh", "host"), "alias", "user@host", "ssh")
+	err := runCommandLogged(execCommand("ssh", "host"), "alias", "ssh")
 	assert.NoError(t, err)
 
 	_, err = os.Stat(filepath.Join(dir, "connections.jsonl"))
@@ -125,11 +123,9 @@ func TestRunCommandLoggedWritesEntry(t *testing.T) {
 	defer func() { noLog = origNoLog }()
 	noLog = false
 
-	origExecCommand := execCommand
-	defer func() { execCommand = origExecCommand }()
-	execCommand = mockCmd.Command
+	useMockExec(t)
 
-	err := runCommandLogged(execCommand("ssh", "host"), "myalias", "me@host", "ssh")
+	err := runCommandLogged(execCommand("ssh", "host"), "myalias", "ssh")
 	assert.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "connections.jsonl"))
@@ -141,7 +137,8 @@ func TestRunCommandLoggedWritesEntry(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	assert.Equal(t, "myalias", e.Alias)
-	assert.Equal(t, "me@host", e.Address)
+	// The address comes from the ssh -G resolution the mock helper emits.
+	assert.Equal(t, "testuser@test.example.com", e.Address)
 	assert.Equal(t, "ssh", e.Mode)
 	assert.Equal(t, 0, e.ExitCode)
 }

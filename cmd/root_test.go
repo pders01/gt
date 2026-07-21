@@ -1,31 +1,55 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kevinburke/ssh_config"
 	"github.com/stretchr/testify/assert"
 )
 
-// mockCommand replaces exec.Command for testing
+// mockCommand replaces exec.Command for testing. It records every
+// invocation because a single gt run now execs more than once: the
+// connection itself, then ssh -G for the audit-log address. resolveListRows
+// also calls it from multiple goroutines, hence the mutex.
 type mockExecCommand struct {
-	lastCommand string
-	lastArgs    []string
+	mu       sync.Mutex
+	commands []string
+	argLists [][]string
 }
 
 var mockCmd = &mockExecCommand{}
 
 func (m *mockExecCommand) Command(command string, args ...string) *exec.Cmd {
-	m.lastCommand = command
-	m.lastArgs = args
+	m.mu.Lock()
+	m.commands = append(m.commands, command)
+	m.argLists = append(m.argLists, append([]string(nil), args...))
+	m.mu.Unlock()
 	cs := []string{"-test.run=TestHelperProcess", "--", command}
 	cs = append(cs, args...)
 	cmd := exec.Command(os.Args[0], cs...)
 	cmd.Env = []string{"GO_WANT_HELPER_PROCESS=1"}
 	return cmd
+}
+
+func (m *mockExecCommand) reset() {
+	m.mu.Lock()
+	m.commands, m.argLists = nil, nil
+	m.mu.Unlock()
+}
+
+// useMockExec swaps execCommand for the recording mock for one test.
+func useMockExec(t *testing.T) {
+	t.Helper()
+	orig := execCommand
+	t.Cleanup(func() { execCommand = orig })
+	execCommand = mockCmd.Command
+	mockCmd.reset()
 }
 
 // TestHelperProcess isn't a real test. It's used to mock exec.Command
@@ -49,35 +73,22 @@ func TestHelperProcess(t *testing.T) {
 	// Mock different commands
 	switch args[0] {
 	case "ssh":
-		// Just exit successfully for SSH
+		for _, a := range args[1:] {
+			if a == "-G" {
+				// Emulate ssh -G's resolved key-value output.
+				fmt.Println("user testuser")
+				fmt.Println("hostname test.example.com")
+				fmt.Println("port 2222")
+				fmt.Println("identityfile ~/.ssh/test_key")
+				break
+			}
+		}
 		os.Exit(0)
 	case "scp":
 		// For SCP, we could validate the arguments if needed
 		os.Exit(0)
 	default:
 		os.Exit(1)
-	}
-}
-
-func setupTestConfig(t *testing.T) {
-	pattern, err := ssh_config.NewPattern("testserver")
-	if err != nil {
-		t.Fatalf("Failed to create pattern: %v", err)
-	}
-
-	// Create a temporary config for testing
-	cfg = &ssh_config.Config{
-		Hosts: []*ssh_config.Host{
-			{
-				Patterns: []*ssh_config.Pattern{pattern},
-				Nodes: []ssh_config.Node{
-					&ssh_config.KV{Key: "Hostname", Value: "test.example.com"},
-					&ssh_config.KV{Key: "User", Value: "testuser"},
-					&ssh_config.KV{Key: "Port", Value: "2222"},
-					&ssh_config.KV{Key: "IdentityFile", Value: "~/.ssh/test_key"},
-				},
-			},
-		},
 	}
 }
 
@@ -168,15 +179,8 @@ func TestValidateSCPPaths(t *testing.T) {
 }
 
 func TestRunSCP(t *testing.T) {
-	setupTestConfig(t)
 	t.Setenv("GT_LOG_DIR", t.TempDir())
-
-	// Store the original execCommand
-	origExecCommand := execCommand
-	defer func() { execCommand = origExecCommand }()
-
-	// Replace execCommand with our mock
-	execCommand = mockCmd.Command
+	useMockExec(t)
 
 	tests := []struct {
 		name     string
@@ -188,23 +192,19 @@ func TestRunSCP(t *testing.T) {
 			name:  "upload single file",
 			files: []string{"local.txt", ":remote/path"},
 			wantArgs: []string{
-				"-P", "2222",
-				"-i", "~/.ssh/test_key",
 				"-p",
 				"--",
 				"local.txt",
-				"testuser@test.example.com:remote/path",
+				"testserver:remote/path",
 			},
 		},
 		{
 			name:  "download single file",
 			files: []string{":remote.txt", "local/path"},
 			wantArgs: []string{
-				"-P", "2222",
-				"-i", "~/.ssh/test_key",
 				"-p",
 				"--",
-				"testuser@test.example.com:remote.txt",
+				"testserver:remote.txt",
 				"local/path",
 			},
 		},
@@ -212,13 +212,11 @@ func TestRunSCP(t *testing.T) {
 			name:  "upload multiple files",
 			files: []string{"local1.txt", "local2.txt", ":remote/path"},
 			wantArgs: []string{
-				"-P", "2222",
-				"-i", "~/.ssh/test_key",
 				"-p",
 				"--",
 				"local1.txt",
 				"local2.txt",
-				"testuser@test.example.com:remote/path",
+				"testserver:remote/path",
 			},
 		},
 		{
@@ -230,50 +228,39 @@ func TestRunSCP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runSCP("testserver", "testuser@test.example.com", tt.files)
+			mockCmd.reset()
+			err := runSCP("testserver", tt.files)
 			if tt.wantErr {
 				assert.Error(t, err)
 				return
 			}
 			assert.NoError(t, err)
-			assert.Equal(t, "scp", mockCmd.lastCommand)
-			if !tt.wantErr {
-				assert.Equal(t, tt.wantArgs, mockCmd.lastArgs)
-			}
+			assert.Equal(t, "scp", mockCmd.commands[0])
+			assert.Equal(t, tt.wantArgs, mockCmd.argLists[0])
 		})
 	}
 }
 
-func TestRunSCPOmitsEmptyPortAndIdentity(t *testing.T) {
+func TestRunSCPWithOverrides(t *testing.T) {
 	t.Setenv("GT_LOG_DIR", t.TempDir())
-	pattern, err := ssh_config.NewPattern("bare")
-	if err != nil {
-		t.Fatalf("Failed to create pattern: %v", err)
-	}
-	cfg = &ssh_config.Config{
-		Hosts: []*ssh_config.Host{
-			{
-				Patterns: []*ssh_config.Pattern{pattern},
-				Nodes: []ssh_config.Node{
-					&ssh_config.KV{Key: "Hostname", Value: "bare.example.com"},
-				},
-			},
-		},
-	}
+	useMockExec(t)
 
-	origExecCommand := execCommand
-	defer func() { execCommand = origExecCommand }()
-	execCommand = mockCmd.Command
+	origUser, origCfgFile := user, cfgFile
+	defer func() { user, cfgFile = origUser, origCfgFile }()
+	user = "admin"
+	cfgFile = "/tmp/custom_config"
 
-	err = runSCP("bare", "user@bare.example.com", []string{"local.txt", ":remote/path"})
+	err := runSCP("testserver", []string{"local.txt", ":remote/path"})
 	assert.NoError(t, err)
-	assert.Equal(t, "scp", mockCmd.lastCommand)
+	assert.Equal(t, "scp", mockCmd.commands[0])
 	assert.Equal(t, []string{
+		"-F", "/tmp/custom_config",
+		"-o", "User=admin",
 		"-p",
 		"--",
 		"local.txt",
-		"user@bare.example.com:remote/path",
-	}, mockCmd.lastArgs)
+		"testserver:remote/path",
+	}, mockCmd.argLists[0])
 }
 
 func writeConfigFile(t *testing.T, path, content string) {
@@ -361,44 +348,30 @@ func TestCheckConfigOwnerAndMode(t *testing.T) {
 }
 
 func TestRunSSH(t *testing.T) {
-	setupTestConfig(t)
 	t.Setenv("GT_LOG_DIR", t.TempDir())
-
-	// Store the original execCommand
-	origExecCommand := execCommand
-	defer func() { execCommand = origExecCommand }()
-
-	// Replace execCommand with our mock
-	execCommand = mockCmd.Command
+	useMockExec(t)
 
 	tests := []struct {
 		name      string
 		alias     string
-		address   string
 		remoteCmd []string
 		wantArgs  []string
 	}{
 		{
-			name:    "basic connection",
-			alias:   "testserver",
-			address: "testuser@test.example.com",
+			name:  "basic connection preserves the alias",
+			alias: "testserver",
 			wantArgs: []string{
-				"-p", "2222",
-				"-i", "~/.ssh/test_key",
 				"--",
-				"testuser@test.example.com",
+				"testserver",
 			},
 		},
 		{
 			name:      "remote command passthrough",
 			alias:     "testserver",
-			address:   "testuser@test.example.com",
 			remoteCmd: []string{"ls", "/tmp"},
 			wantArgs: []string{
-				"-p", "2222",
-				"-i", "~/.ssh/test_key",
 				"--",
-				"testuser@test.example.com",
+				"testserver",
 				"ls", "/tmp",
 			},
 		},
@@ -406,10 +379,101 @@ func TestRunSSH(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runSSH(tt.alias, tt.address, tt.remoteCmd)
+			mockCmd.reset()
+			err := runSSH(tt.alias, tt.remoteCmd)
 			assert.NoError(t, err)
-			assert.Equal(t, "ssh", mockCmd.lastCommand)
-			assert.Equal(t, tt.wantArgs, mockCmd.lastArgs)
+			assert.Equal(t, "ssh", mockCmd.commands[0])
+			assert.Equal(t, tt.wantArgs, mockCmd.argLists[0])
+			// The follow-up call resolves the audit-log address via ssh -G.
+			assert.Equal(t, "ssh", mockCmd.commands[1])
+			assert.Equal(t, []string{"-G", "--", tt.alias}, mockCmd.argLists[1])
 		})
+	}
+}
+
+func TestRunSSHWithOverrides(t *testing.T) {
+	t.Setenv("GT_LOG_DIR", t.TempDir())
+	useMockExec(t)
+
+	origUser, origCfgFile := user, cfgFile
+	defer func() { user, cfgFile = origUser, origCfgFile }()
+	user = "admin"
+	cfgFile = "/tmp/custom_config"
+
+	err := runSSH("testserver", nil)
+	assert.NoError(t, err)
+	assert.Equal(t, "ssh", mockCmd.commands[0])
+	assert.Equal(t, []string{
+		"-F", "/tmp/custom_config",
+		"-o", "User=admin",
+		"--",
+		"testserver",
+	}, mockCmd.argLists[0])
+	// The overrides flow into the audit-address resolution too, so the
+	// logged user matches who ssh actually connected as.
+	assert.Equal(t, []string{
+		"-F", "/tmp/custom_config",
+		"-o", "User=admin",
+		"-G",
+		"--",
+		"testserver",
+	}, mockCmd.argLists[1])
+}
+
+func TestKnownHost(t *testing.T) {
+	decoded, err := ssh_config.Decode(strings.NewReader(`Host testserver
+  Hostname test.example.com
+
+Host web-* !web-3
+  User deploy
+
+Host *
+  ServerAliveInterval 60
+`))
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	cfg = decoded
+
+	tests := []struct {
+		alias string
+		want  bool
+	}{
+		{"testserver", true},
+		{"web-1", true},             // wildcard blocks still count
+		{"web-3", false},            // negated within its own block
+		{"nope", false},             // catch-all "Host *" must not vouch for typos
+		{"test.example.com", false}, // hostnames are not aliases
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, knownHost(tt.alias), "alias=%q", tt.alias)
+	}
+}
+
+func TestResolveHost(t *testing.T) {
+	useMockExec(t)
+
+	got, err := resolveHost("testserver")
+	assert.NoError(t, err)
+	assert.Equal(t, resolvedHost{
+		user:     "testuser",
+		hostname: "test.example.com",
+		port:     "2222",
+	}, got)
+	assert.Equal(t, []string{"-G", "--", "testserver"}, mockCmd.argLists[0])
+}
+
+func TestResolveListRows(t *testing.T) {
+	useMockExec(t)
+
+	rows := resolveListRows([]string{"alpha", "beta"})
+	assert.Len(t, rows, 2)
+	assert.Equal(t, "alpha", rows[0].alias)
+	assert.Equal(t, "beta", rows[1].alias)
+	for _, r := range rows {
+		assert.NoError(t, r.err)
+		assert.Equal(t, "test.example.com", r.hostname)
+		assert.Equal(t, "testuser", r.user)
+		assert.Equal(t, "2222", r.port)
 	}
 }

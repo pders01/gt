@@ -1,15 +1,15 @@
 # gt - A simple SSH connection manager
 
-gt is a command-line tool that simplifies SSH connections by leveraging your existing SSH configuration. It provides a colorful, user-friendly interface to connect to your SSH hosts and supports all standard SSH config features including config includes.
+gt is a small UX layer over OpenSSH. It reads your existing SSH config to list and tab-complete host aliases, adds a colon shorthand for scp, and keeps a local audit log of every connection — then hands the alias straight to `ssh`/`scp`, so OpenSSH resolves the config and owns the connection.
 
 ## Features
 
 - Direct connection to hosts from your SSH config
 - Colorful, readable output
-- List available SSH hosts with user and hostname info
+- List available SSH hosts with user and hostname info (resolved by `ssh -G`)
 - Automatic handling of SSH config includes (including nested chains)
 - Strict-mode permission check on the SSH config and every Include
-- Support for all SSH options (Port, IdentityFile, etc.)
+- OpenSSH owns connection semantics: the alias is passed through unresolved, so ProxyJump, Match blocks, canonicalization, multiple IdentityFiles, and every other option behave exactly as with plain `ssh`
 - User override capability
 - SCP support
 - Shell completion for hosts
@@ -97,6 +97,8 @@ gt --no-log <host>      # Skip the audit log for this connection
 ## Configuration
 
 gt uses your existing SSH configuration (`~/.ssh/config` by default) and supports all standard SSH config features. No additional configuration is needed.
+
+gt never resolves connection options itself. `gt myserver` execs `ssh -- myserver`, so OpenSSH matches Host blocks against the alias and applies the full config — including options gt has never heard of. gt only parses the config to enumerate aliases (for `gt list`, completions, and a friendly "host not found" error) and asks `ssh -G` when it needs resolved values for display, such as in `gt list` and the audit log. This also means defaults are OpenSSH's: with no `User` configured, you connect as your local user.
 
 Example SSH config:
 
